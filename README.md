@@ -134,6 +134,7 @@ Version Control : Git + GitHub
 ---
 
 ## `$ whoami`
+<img width="1919" height="907" alt="Screenshot 2026-08-21 115631" src="https://github.com/user-attachments/assets/539bd0f9-380d-49ea-9532-cc056e188d0e" />
 
 Built by [Mayank Saroha](https://github.com/wolfyy-art) as a capstone
 project for **MirAI School of Technology**.
