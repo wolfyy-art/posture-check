@@ -1,62 +1,20 @@
 flowchart TD
-    A([👤 User]) -->|"Selects exercise\n+ takes photo"| B
+    A[User] -->|Selects exercise + captures photo| B[Streamlit UI - app.py]
+    B -->|st.form submission| C[prompts.py]
+    C -->|Builds exercise-specific system prompt via f-string| D[gemini_client.py]
+    D -->|Sends image + prompt| E[Gemini Vision API - gemini-3.6-flash]
+    E -->|Returns raw JSON text| D
+    D -->|Strips markdown fences, isolates JSON block| F[_extract_json]
+    F -->|Parses + validates schema| G[Pydantic FormAnalysis model]
+    G -->|On validation failure| H{Retry? max 2 attempts}
+    H -->|Yes| D
+    H -->|No - exhausted retries| I[GeminiParseError surfaced as friendly message]
+    G -->|On success| J[st.session_state history]
+    J -->|Appends attempt, keeps last 3| B
+    B -->|Renders| K[st.metric KPI cards with deltas]
+    B -->|Renders| L[st.data_editor flaw table]
+    B -->|Renders| M[st.expander detailed notes]
 
-    subgraph Streamlit_App ["🖥️  Streamlit App  (app.py)"]
-        B["st.form\n(exercise select + camera input)"]
-        B -->|"Form submitted"| C["utils.py\npreprocess_image()"]
-        C -->|"PIL Image (RGB, resized)"| D["prompts.py\nget_prompt(exercise)"]
-        D -->|"System prompt + image"| E["gemini_client.py\nanalyse_form()"]
-    end
-
-    subgraph Gemini_API ["☁️  Google Gemini Vision API"]
-        F["gemini-2.0-flash\nVision model"]
-    end
-
-    E -->|"HTTP request\n(image + prompt)"| F
-    F -->|"Raw JSON string"| E
-
-    subgraph Validation ["🛡️  Pydantic Validation"]
-        G["FormAnalysis model\n(score, grade, flaws, tips)"]
-    end
-
-    E -->|"Parse + validate"| G
-
-    subgraph Session_State ["💾  st.session_state"]
-        H["attempt_history\n(last 3 attempts)"]
-    end
-
-    G -->|"record_attempt()"| H
-
-    subgraph Results_Dashboard ["📊  Results Dashboard  (app.py)"]
-        I["st.metric KPI cards\n(score, grade, flaw count)"]
-        J["st.data_editor\nFlaw breakdown table"]
-        K["st.expander\nCoaching notes & tips"]
-        L["History cards\n(last 3 attempts with delta)"]
-    end
-
-    G --> I
-    G --> J
-    G --> K
-    H --> L
-
-    I --> A
-    J --> A
-    K --> A
-    L --> A
-
-    subgraph Error_Handling ["⚠️  Error Handling"]
-        M["GeminiClientError\n(missing API key, network)"]
-        N["GeminiParseError\n(malformed JSON → retry)"]
-        O["Image quality check\n(blurry / no_person / partial_frame)"]
-    end
-
-    E -.->|"on failure"| M
-    E -.->|"on bad JSON"| N
-    G -.->|"image_quality ≠ ok"| O
-
-    style Streamlit_App fill:#1a1a2e,stroke:#4a4a8a,color:#fff
-    style Gemini_API fill:#0d2137,stroke:#1e88e5,color:#fff
-    style Validation fill:#1a2e1a,stroke:#4a8a4a,color:#fff
-    style Session_State fill:#2e1a2e,stroke:#8a4a8a,color:#fff
-    style Results_Dashboard fill:#2e2a1a,stroke:#8a7a4a,color:#fff
-    style Error_Handling fill:#2e1a1a,stroke:#8a4a4a,color:#fff
+    style E fill:#4285F4,color:#fff
+    style G fill:#34A853,color:#fff
+    style I fill:#EA4335,color:#fff
