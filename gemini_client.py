@@ -98,6 +98,13 @@ _MODEL_NAME = "gemini-3.6-flash"
 _MAX_RETRIES = 2
 _RETRY_DELAY_SECONDS = 2
 
+# Gemini 3-series models spend part of their output token budget on internal
+# "thinking" before writing the final answer. If max_output_tokens is too low,
+# thinking can eat the whole budget and truncate the actual JSON response.
+# We raise the ceiling AND turn thinking down since this task needs structured
+# output, not deep reasoning.
+_MAX_OUTPUT_TOKENS = 2048
+
 
 def _configure_sdk() -> None:
     """Read GEMINI_API_KEY from env and configure the SDK."""
@@ -111,12 +118,25 @@ def _configure_sdk() -> None:
 
 
 def _extract_json(text: str) -> str:
-    """Strip markdown code fences if Gemini wraps its JSON anyway."""
+    """Strip markdown code fences if Gemini wraps its JSON anyway, and grab
+    just the {...} block in case there's stray text around it."""
     text = text.strip()
+
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(lines[1:-1]).strip()
-    return text
+        # Drop the first fence line (```json or ```) and the last ``` line
+        if len(lines) >= 2 and lines[-1].strip().startswith("```"):
+            text = "\n".join(lines[1:-1]).strip()
+        else:
+            text = "\n".join(lines[1:]).strip()
+
+    # If there's still stray text before/after, isolate the outermost {...}
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+
+    return text.strip()
 
 
 def _parse_response(raw: str) -> FormAnalysis:
@@ -135,6 +155,31 @@ def _parse_response(raw: str) -> FormAnalysis:
         raise GeminiParseError(
             f"Gemini JSON did not match expected schema: {exc}", raw_response=raw
         ) from exc
+
+
+def _build_generation_config() -> "genai.types.GenerationConfig":
+    """Build the generation config, disabling/lowering 'thinking' where the
+    installed SDK version supports it, so token budget goes to the JSON
+    output instead of internal reasoning."""
+    kwargs = dict(
+        temperature=0.2,
+        max_output_tokens=_MAX_OUTPUT_TOKENS,
+        response_mime_type="application/json",
+    )
+
+    # thinking_config is only available on newer SDK versions. Guard it so
+    # older installs don't crash — they'll just skip this and rely on the
+    # higher max_output_tokens instead.
+    try:
+        kwargs["thinking_config"] = genai.types.ThinkingConfig(thinking_level="low")
+    except AttributeError:
+        logger.info(
+            "ThinkingConfig not available in this SDK version — "
+            "relying on max_output_tokens=%d only.",
+            _MAX_OUTPUT_TOKENS,
+        )
+
+    return genai.types.GenerationConfig(**kwargs)
 
 
 def analyse_form(image: Image.Image, exercise_prompt: str) -> FormAnalysis:
@@ -163,6 +208,7 @@ def analyse_form(image: Image.Image, exercise_prompt: str) -> FormAnalysis:
     _configure_sdk()
 
     model = genai.GenerativeModel(model_name=_MODEL_NAME)
+    generation_config = _build_generation_config()
 
     last_error: Optional[Exception] = None
 
@@ -171,11 +217,23 @@ def analyse_form(image: Image.Image, exercise_prompt: str) -> FormAnalysis:
             logger.info("Gemini request attempt %d/%d", attempt, _MAX_RETRIES)
             response = model.generate_content(
                 [exercise_prompt, image],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.2,
-                    max_output_tokens=1024,
-                ),
+                generation_config=generation_config,
             )
+
+            # Diagnostic: confirms whether truncation (MAX_TOKENS) is the
+            # cause of any parse failure, versus a genuine formatting issue.
+            try:
+                finish_reason = response.candidates[0].finish_reason
+                logger.info("Gemini finish_reason: %s", finish_reason)
+                if str(finish_reason) in ("2", "MAX_TOKENS"):
+                    logger.warning(
+                        "Response was truncated by MAX_TOKENS on attempt %d — "
+                        "consider raising _MAX_OUTPUT_TOKENS further.",
+                        attempt,
+                    )
+            except (IndexError, AttributeError):
+                pass
+
             return _parse_response(response.text)
 
         except GeminiParseError as exc:
